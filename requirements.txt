@@ -1,0 +1,5 @@
+PyPDF2
+python-pptx
+reportlab
+openai
+python-dotenv
