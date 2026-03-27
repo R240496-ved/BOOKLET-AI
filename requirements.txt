@@ -1,0 +1,12 @@
+streamlit
+PyMuPDF
+pymupdf
+python-pptx
+reportlab
+openai
+python-dotenv
+sentence-transformers
+faiss-cpu
+numpy
+Pillow
+requests
