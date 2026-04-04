@@ -113,14 +113,34 @@ defaults = {
     "structured_text": "",
     "images": [],              # List of image metadata dicts
     "rag_store": None,         # {"chunks": [], "embeddings": ..., "index": ...}
-    "messages": [],            # Chat history
+    "messages": [],
     "uploaded_filename": "",
     "doc_title": "Study Booklet",
+    "context_text": "",        # Shared context for RAG and MCQ from both Upload and OCR
+    "ocr_text": "",            # Extracted OCR text
+    "router_mode": "RAG",      # Current mode
+    "mcq_quiz": [],            # To store generated quiz questions
+    "user_answers": {},        # To store user quiz answers
+    "quiz_submitted": False,   # Whether quiz was submitted
+    "ocr_generated_notes": "", # Store generated notes from OCR for download features
 }
 
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# Legacy rollback to flat list
+if "chats" in st.session_state and isinstance(st.session_state.chats, dict):
+    # Try to rescue messages if any exist
+    all_msgs = []
+    for chat_data in st.session_state.chats.values():
+        if isinstance(chat_data, dict) and "messages" in chat_data:
+            all_msgs.extend(chat_data["messages"])
+        elif isinstance(chat_data, list):
+            all_msgs.extend(chat_data)
+    if all_msgs:
+        st.session_state.messages = all_msgs
+    del st.session_state.chats
 
 
 # ─────────────────────────────────────────────
@@ -133,7 +153,14 @@ with st.sidebar:
 
     page = st.radio(
         "Navigation",
-        ["📤 Upload & Process", "📘 Booklet Generator", "💬 RAG Chatbot", "📊 PPT Generator"],
+        [
+            "📤 Upload & Process",
+            "💬 Chat & Solve",
+            "✨ Generate (GEN)",
+            "📸 OCR Upload",
+            "📘 Booklet Generator",
+            "📊 PPT Generator"
+        ],
         label_visibility="collapsed",
     )
 
@@ -155,6 +182,8 @@ with st.sidebar:
 
     st.markdown("---")
 
+
+
     # LLM Mode
     llm_mode = os.getenv("LLM_MODE", "api").upper()
     llm_model = os.getenv("LLM_API_MODEL", "llama-3.1-8b-instant")
@@ -163,22 +192,29 @@ with st.sidebar:
 
 def render_inline_content(text):
     """Helper to render text + inline image markers in Streamlit."""
-    lines = text.split("\n")
-    for line in lines:
-        raw = line.strip()
-        if raw.startswith("![IMAGE:"):
-            img_path = raw[8:-1]
+    import re
+    # Split the text by exactly matching the ![IMAGE:xxx] markdown pattern
+    parts = re.split(r'(!\[IMAGE:.*?\])', text)
+    
+    for part in parts:
+        if not part:
+            continue
+            
+        if part.startswith("![IMAGE:") and part.endswith("]"):
+            img_path = part[8:-1].strip()
             if os.path.exists(img_path):
                 st.image(img_path, use_container_width=True)
+            else:
+                st.markdown(f"*(Image not found: {img_path})*")
         else:
-            st.markdown(line)
+            if part.strip():
+                st.markdown(part)
 
 
 # ─────────────────────────────────────────────
 # LAZY IMPORTS (avoid import errors on startup)
 # ─────────────────────────────────────────────
 
-@st.cache_resource(show_spinner=False)
 def load_modules():
     from modules.member2_input_extraction import extract
     from modules.member3_clean_simplify import clean_and_simplify
@@ -187,6 +223,12 @@ def load_modules():
     from modules.ppt_generator import generate_ppt
     from modules.rag_engine import build_rag_store, retrieve_top_k
     from modules.llm_gateway import generate_answer
+    
+    # New modules
+    from modules.ocr_module import extract_text_from_image
+    from modules.router import route_query
+    from modules.generator import generate_academic_content, generate_step_by_step_solution, generate_mcq_quiz
+
     return {
         "extract": extract,
         "clean": clean_and_simplify,
@@ -196,8 +238,12 @@ def load_modules():
         "build_rag": build_rag_store,
         "retrieve": retrieve_top_k,
         "llm": generate_answer,
+        "ocr_ext": extract_text_from_image,
+        "route": route_query,
+        "gen_academic": generate_academic_content,
+        "gen_solve": generate_step_by_step_solution,
+        "gen_mcq": generate_mcq_quiz,
     }
-
 
 M = load_modules()
 
@@ -216,8 +262,8 @@ if page == "📤 Upload & Process":
         st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
         uploaded_file = st.file_uploader(
             "Upload your document",
-            type=["pdf", "pptx", "txt"],
-            help="Supports PDF (text + images), PPTX (text + images), and TXT files.",
+            type=["pdf", "pptx", "txt", "png", "jpg", "jpeg"],
+            help="Supports PDF, PPTX, TXT, and Images (handwritten notes via OCR).",
         )
 
         input_method = st.radio(
@@ -276,33 +322,43 @@ if page == "📤 Upload & Process":
             raw_text = pasted_text.strip()
             images = []
 
-        if raw_text:
-            with st.spinner("🧹 Cleaning text..."):
-                clean = M["clean"](raw_text)
+        if not raw_text or len(raw_text.strip()) < 5:
+            st.error("❌ No readable text found. Please upload a clearer document or image.")
+            st.stop()
 
-            with st.spinner("📐 Structuring content..."):
-                structured = M["structure"](clean)
+        with st.spinner("🧹 Cleaning text..."):
+            clean = M["clean"](raw_text)
+            if not clean:
+                st.error("❌ Text cleaning resulted in empty data. Parsing stopped.")
+                st.stop()
 
-            with st.spinner("🧠 Building RAG index (embedding chunks)..."):
-                rag_store = M["build_rag"](clean)
+        with st.spinner("📐 Structuring content..."):
+            structured = M["structure"](clean)
+            if not structured:
+                st.error("❌ Structuring failed. Parsing stopped.")
+                st.stop()
 
-            # Persist to session state
-            st.session_state.pipeline_done = True
-            st.session_state.raw_text = raw_text
-            st.session_state.clean_text = clean
-            st.session_state.structured_text = structured
-            st.session_state.images = images
-            st.session_state.rag_store = rag_store
-            st.session_state.uploaded_filename = file_name
-            st.session_state.doc_title = doc_title
-            st.session_state.messages = []  # Reset chat on new upload
+        with st.spinner("🧠 Building RAG index (embedding chunks)..."):
+            rag_store = M["build_rag"](clean)
+            if not rag_store or not rag_store.get("chunks"):
+                st.error("❌ RAG Indexing failed. Document might be too small to extract data.")
+                st.stop()
 
-            st.success(f"✅ Processed **{file_name}** — {len(images)} image(s) extracted, {len(rag_store['chunks'])} chunks indexed.")
+        # Persist to session state
+        st.session_state.pipeline_done = True
+        st.session_state.context_text = clean
+        st.session_state.raw_text = raw_text
+        st.session_state.clean_text = clean
+        st.session_state.structured_text = structured
+        st.session_state.images = images
+        st.session_state.rag_store = rag_store
+        st.session_state.uploaded_filename = file_name
+        st.session_state.doc_title = doc_title
 
-            with st.expander("📄 Content Preview (Text + Inline Images)", expanded=True):
-                render_inline_content(st.session_state.structured_text)
-        else:
-            st.error("Please upload a file or paste some text first.")
+        st.success(f"✅ Processed **{file_name}** — {len(images)} image(s) extracted, {len(rag_store['chunks'])} chunks indexed.")
+
+        with st.expander("📄 Content Preview (Text + Inline Images)", expanded=True):
+            render_inline_content(st.session_state.structured_text)
 
 
 # ══════════════════════════════════════════════
@@ -363,87 +419,333 @@ elif page == "📘 Booklet Generator":
 # PAGE: RAG CHATBOT
 # ══════════════════════════════════════════════
 
-elif page == "💬 RAG Chatbot":
-    st.markdown("## 💬 RAG Chatbot")
-    st.caption("Answers **strictly from your uploaded document**. If not found → *'Not in document.'*")
+elif page == "💬 Chat & Solve":
+    st.markdown("## 💬 Chat & Solve")
+    st.caption("Intelligent chatbot: Ask a question (RAG), generate notes (GEN), or solve problems (SOLVE) automatically.")
 
     if not st.session_state.pipeline_done:
-        st.warning("⚠️ No document processed yet. Go to **Upload & Process** first.")
-        st.stop()
+        st.warning("⚠️ No document processed yet. Go to **Upload & Process** first, or use generic problem solving.")
 
     col_chat, col_ctx = st.columns([2.2, 1])
 
     with col_chat:
-        # Mode selector
-        mode = st.radio("Notes style:", ["Study", "Exam"], horizontal=True)
+        tab_chat, tab_mcq = st.tabs(["💬 Regular Chat", "🎯 MCQ Quiz"])
+        
+        with tab_chat:
+            mode = st.radio("Notes style (for RAG):", ["Study", "Exam"], horizontal=True)
 
-        # Chat history display — text only
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    render_inline_content(msg["content"])
 
-        # Chat input
-        prompt = st.chat_input("Ask something about your document...")
+            prompt = st.chat_input("Ask a question, say 'generate notes on...', or 'solve...'")
 
-        if prompt:
-            # User message
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
 
-            # RAG: retrieve relevant chunks
-            rag = st.session_state.rag_store
-            relevant_chunks = []
 
-            if rag and rag.get("index") is not None:
-                with st.spinner("🔍 Searching document..."):
-                    relevant_chunks = M["retrieve"](
-                        prompt,
-                        rag["chunks"],
-                        rag["index"],
-                        k=5,
-                    )
+            if prompt:
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    render_inline_content(prompt)
 
-            # Generate answer (strict RAG — text only)
-            with st.spinner("💭 Generating answer..."):
-                answer = M["llm"](
-                    user_query=prompt,
-                    context_chunks=relevant_chunks,
-                    mode=mode,
-                    strict_rag=True,
-                )
+                # Route the prompt
+                route = M["route"](prompt, from_image=False)
+                
+                with st.spinner(f"Intelligent Routing: **{route}** Mode - processing..."):
+                    if route == "GEN":
+                        answer = M["gen_academic"](prompt, is_syllabus=False, context=st.session_state.context_text)
+                    elif route == "SOLVE":
+                        answer = M["gen_solve"](prompt, context=st.session_state.context_text)
+                    else:
+                        # RAG Mode
+                        rag = st.session_state.rag_store
+                        relevant_chunks = []
+                        if rag and rag.get("index") is not None:
+                            relevant_chunks = M["retrieve"](prompt, rag["chunks"], rag["index"], k=5)
+                        answer = M["llm"](user_query=prompt, context_chunks=relevant_chunks, mode=mode, strict_rag=True)
 
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-            with st.chat_message("assistant"):
-                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                with st.chat_message("assistant"):
+                    render_inline_content(answer)
+                    
+        with tab_mcq:
+            st.markdown("### 🎯 Generate MCQ Quiz")
+            st.caption("Test your understanding based on the uploaded document.")
+            
+            # Determine dynamic question count based on document length
+            text_length = len(st.session_state.context_text.split()) if st.session_state.context_text else 0
+            if text_length > 0:
+                if text_length < 500:
+                    num_questions = 6
+                elif text_length < 1500:
+                    num_questions = 7
+                else:
+                    num_questions = 9
+                btn_text = f"Generate {num_questions}-Question Quiz"
+            else:
+                num_questions = 5
+                btn_text = "Generate Quiz"
+            
+            if st.button(btn_text):
+                if not st.session_state.context_text:
+                    st.error("No content available for quiz generation")
+                else:
+                    with st.spinner(f"Generating a {num_questions}-Question Quiz using AI..."):
+                        quiz = M["gen_mcq"](st.session_state.context_text, num_questions)
+                        if quiz:
+                            st.session_state.mcq_quiz = quiz
+                            st.session_state.user_answers = {}
+                            st.session_state.quiz_submitted = False
+                        else:
+                            st.error("Failed to generate quiz. Verify LLM connection.")
+                            
+            if st.session_state.mcq_quiz:
+                st.markdown("---")
+                quiz = st.session_state.mcq_quiz
+                
+                for i, q in enumerate(quiz):
+                    st.markdown(f"**Q{i+1}: {q.get('question', '')}**")
+                    options = q.get('options', [])
+                    ans = st.radio("Options:", options, key=f"q_{i}", index=None, label_visibility="collapsed")
+                    if ans:
+                        st.session_state.user_answers[i] = ans
+                
+                st.markdown("---")
+                if st.button("Submit Quiz", type="primary"):
+                    st.session_state.quiz_submitted = True
+                    
+                if st.session_state.quiz_submitted:
+                    score = 0
+                    st.markdown("## 📊 Quiz Results")
+                    for i, q in enumerate(quiz):
+                        user_ans = st.session_state.user_answers.get(i)
+                        correct_ans = q.get('answer', '')
+                        if user_ans and user_ans.strip().lower() == correct_ans.strip().lower():
+                            score += 1
+                            st.success(f"**Q{i+1}: Correct!** ✅")
+                        else:
+                            st.error(f"**Q{i+1}: Incorrect ❌**\n\nYour answer: {user_ans}\n\nCorrect answer: {correct_ans}")
+                            
+                    st.markdown(f"### 🎉 Final Score: {score} / {len(quiz)}")
 
     with col_ctx:
-        st.markdown("### 📚 Retrieved Context")
-        st.caption("Top chunks used for the last answer.")
+        st.markdown("### 📚 Details")
+        st.caption("Context used for your last query.")
 
         if st.session_state.messages:
             last_user = next(
-                (m["content"] for m in reversed(st.session_state.messages)
-                 if m["role"] == "user"),
+                (m["content"] for m in reversed(st.session_state.messages) if m["role"] == "user"),
                 None,
             )
-            rag = st.session_state.rag_store
-            if last_user and rag and rag.get("index") is not None:
-                ctx_chunks = M["retrieve"](
-                    last_user,
-                    rag["chunks"],
-                    rag["index"],
-                    k=3,
-                )
-                for i, chunk in enumerate(ctx_chunks):
-                    with st.expander(f"Chunk {i + 1}"):
-                        st.write(chunk[:500] + ("..." if len(chunk) > 500 else ""))
+            
+            if last_user:
+                route = M["route"](last_user, from_image=False)
+                st.info(f"Last Mode: **{route}**")
+                
+                if route == "RAG":
+                    rag = st.session_state.rag_store
+                    if rag and rag.get("index") is not None:
+                        ctx_chunks = M["retrieve"](last_user, rag["chunks"], rag["index"], k=3)
+                        for i, chunk in enumerate(ctx_chunks):
+                            with st.expander(f"Chunk {i + 1}"):
+                                st.write(chunk[:500] + ("..." if len(chunk) > 500 else ""))
+                elif route == "GEN":
+                    st.success("Generated structured academic notes across definitions, examples, and summaries.")
+                elif route == "SOLVE":
+                    st.success("Generated step-by-step mathematical/analytical solution.")
 
     # Clear chat
     if st.session_state.messages:
         if st.button("🗑️ Clear Chat"):
             st.session_state.messages = []
             st.rerun()
+
+# ══════════════════════════════════════════════
+# PAGE: GENERATE (GEN)
+# ══════════════════════════════════════════════
+
+elif page == "✨ Generate (GEN)":
+    st.markdown("## ✨ Generate Academic Content")
+    st.caption("Generate natural, flowing study notes from a topic or an entire syllabus. Always includes practical Examples.")
+
+    is_syllabus = st.checkbox("This is a syllabus/outline with multiple topics", value=False)
+    topic_input = st.text_area("Enter Topic or Syllabus:")
+    
+    # Use a form or standard layout to generate content
+    if st.button("Generate Notes", type="primary"):
+        if topic_input.strip():
+            with st.spinner("Generating academic notes..."):
+                generated_content = M["gen_academic"](topic_input, is_syllabus=is_syllabus, context=st.session_state.clean_text)
+                
+            st.session_state.structured_text = generated_content
+            st.session_state.pipeline_done = True 
+            # Provide instant success and display
+            st.success("✅ Content generated! Ready for export.")
+        else:
+            st.error("Please enter a topic or syllabus.")
+            
+    if st.session_state.structured_text and page == "✨ Generate (GEN)":
+        st.markdown("### 📝 Output")
+        render_inline_content(st.session_state.structured_text)
+        st.markdown("---")
+        
+        st.markdown("### 📥 Quick Exports")
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            if st.button("Export to PDF", use_container_width=True):
+                with st.spinner("Generating Booklet PDF..."):
+                    pdf_path = "data/output/generated_notes.pdf"
+                    success = M["gen_booklet"](st.session_state.structured_text, [], "Generated Study Notes", pdf_path)
+                    if success and os.path.exists(pdf_path):
+                        with open(pdf_path, "rb") as pdf_file:
+                            pdf_bytes = pdf_file.read()
+                        st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name="study_notes.pdf", mime="application/pdf", use_container_width=True)
+                    else:
+                        st.error("❌ PDF Generation Failed.")
+                        
+        with c2:
+            if st.button("Export to PPT", use_container_width=True):
+                with st.spinner("Generating Presentation..."):
+                    ppt_path = "data/output/generated_slides.pptx"
+                    success = M["gen_ppt"](st.session_state.structured_text, [], "Generated Topic", ppt_path)
+                    if success and os.path.exists(ppt_path):
+                        with open(ppt_path, "rb") as pptx_file:
+                            ppt_bytes = pptx_file.read()
+                        st.download_button(label="📊 Download PPT", data=ppt_bytes, file_name="study_presentation.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+                    else:
+                        st.error("❌ PPT Generation Failed.")
+
+# ══════════════════════════════════════════════
+# PAGE: OCR UPLOAD
+# ══════════════════════════════════════════════
+
+elif page == "📸 OCR Upload":
+    st.markdown("## 📸 OCR Image & PDF Upload")
+    st.caption("Upload images or scanned PDFs (handwritten/notes). Extract text and send it to RAG, GEN, SOLVE, or Explain it.")
+    
+    uploaded_file_ocr = st.file_uploader("Upload Image or PDF", type=["png", "jpg", "jpeg", "pdf"])
+    
+    if uploaded_file_ocr:
+        os.makedirs("data/input", exist_ok=True)
+        file_path = os.path.join("data", "input", uploaded_file_ocr.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file_ocr.getbuffer())
+            
+        # PDF Multipage logic vs Single Image
+        if uploaded_file_ocr.name.lower().endswith('.pdf'):
+            import fitz
+            doc = fitz.open(file_path)
+            st.info(f"**PDF Detected** ({len(doc)} pages). Preparing to run OCR extraction on all pages.")
+            
+            if st.button("🔍 Extract Text from All Pages", use_container_width=True):
+                extracted_text_all = []
+                with st.spinner("Processing PDF pages via OCR (This might take a while)..."):
+                    for page_num in range(len(doc)):
+                        page = doc[page_num]
+                        pix = page.get_pixmap(dpi=150)
+                        page_img_path = f"{file_path}_p{page_num}.png"
+                        pix.save(page_img_path)
+                        
+                        st.image(page_img_path, caption=f"Page {page_num+1}", width=350)
+                        extracted_text = M["ocr_ext"](page_img_path)
+                        if extracted_text:
+                            extracted_text_all.append(f"--- Page {page_num + 1} ---\n{extracted_text}")
+                            
+                st.session_state.ocr_text = "\n\n".join(extracted_text_all)
+                doc.close()
+        else:
+            st.image(file_path, caption="Uploaded Image", use_container_width=True)
+            if st.button("🔍 Extract Text", use_container_width=True):
+                with st.spinner("Processing image via EasyOCR..."):
+                    extracted_text = M["ocr_ext"](file_path)
+                    st.session_state.ocr_text = extracted_text
+                
+        if st.session_state.ocr_text:
+            st.warning("⚠️ **Note:** OCR on handwritten text may contain spelling errors. Please correct them below before passing to AI.")
+            edited_text = st.text_area("Extracted Text (Editable):", value=st.session_state.ocr_text, height=250)
+            
+            if st.button("💾 Save as Context (Enables Chat & MCQ Quiz)", type="primary"):
+                with st.spinner("Cleaning & Saving OCR Context..."):
+                    clean_text = M["clean"](edited_text)
+                    st.session_state.context_text = clean_text
+                    rag_store = M["build_rag"](clean_text)
+                    st.session_state.rag_store = rag_store
+                    st.session_state.pipeline_done = True
+                    st.success("✅ Context Saved! You can now use the Chat & Solve or MCQ Quiz tabs.")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            # Variables to store output so it renders outside the columns
+            ocr_output_header = None
+            ocr_output_content = None
+            show_downloads = False
+            
+            with col1:
+                if st.button("💬 Ask (RAG)", use_container_width=True):
+                    with st.spinner("Asking RAG..."):
+                        rag = st.session_state.rag_store
+                        relevant_chunks = []
+                        if rag and rag.get("index") is not None:
+                            relevant_chunks = M["retrieve"](edited_text, rag["chunks"], rag["index"], k=5)
+                        ans = M["llm"](user_query=edited_text, context_chunks=relevant_chunks)
+                        
+                        if "messages" not in st.session_state:
+                            st.session_state.messages = []
+                        st.session_state.messages.append({"role": "user", "content": f"[Image OCR]\n{edited_text}"})
+                        st.session_state.messages.append({"role": "assistant", "content": ans})
+                        st.success("Sent to chat! Check 'Chat & Solve' page.")
+            with col2:
+                if st.button("✨ Generate Notes", use_container_width=True):
+                    with st.spinner("Generating Notes..."):
+                        ans = M["gen_academic"](edited_text, is_syllabus=False, context=st.session_state.context_text)
+                        st.session_state.ocr_generated_notes = ans
+                        
+            with col3:
+                if st.button("💡 Explain Concept", use_container_width=True):
+                    with st.spinner("Analyzing Concept..."):
+                        # Custom straightforward explanation prompt
+                        prompt = f"Please interpret and clearly explain the concepts mentioned in this OCR-extracted text. Format using concise paragraphs and bullet points where helpful:\n\n{edited_text}"
+                        ans = M["llm"](user_query=prompt, context_chunks=[])
+                        ocr_output_header = "### 💡 Explanation"
+                        ocr_output_content = ans
+                        
+            # Immediate pass-through of session state for notes
+            if st.session_state.ocr_generated_notes and not ocr_output_content:
+                ocr_output_header = "### 📝 Notes Output"
+                ocr_output_content = st.session_state.ocr_generated_notes
+                show_downloads = True
+
+            if ocr_output_content:
+                st.markdown("---")
+                st.markdown(ocr_output_header)
+                st.markdown(ocr_output_content)
+                
+                # Dynamic rendering of downloads if in Notes mode
+                if show_downloads:
+                    st.markdown("### 📥 Download Notes")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("Export to PDF", key="ocr_pdf_btn", use_container_width=True):
+                            with st.spinner("Generating Booklet PDF..."):
+                                pdf_path = "data/output/ocr_notes.pdf"
+                                success = M["gen_booklet"](st.session_state.ocr_generated_notes, [], "Generated Study Notes", pdf_path)
+                                if success and os.path.exists(pdf_path):
+                                    with open(pdf_path, "rb") as pdf_file:
+                                        pdf_bytes = pdf_file.read()
+                                    st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name="ocr_notes.pdf", mime="application/pdf", use_container_width=True)
+                                else:
+                                    st.error("❌ PDF Generation Failed.")
+                    with c2:
+                        if st.button("Export to PPT", key="ocr_ppt_btn", use_container_width=True):
+                            with st.spinner("Generating Presentation..."):
+                                ppt_path = "data/output/ocr_slides.pptx"
+                                success = M["gen_ppt"](st.session_state.ocr_generated_notes, [], "Generated Topic", ppt_path)
+                                if success and os.path.exists(ppt_path):
+                                    with open(ppt_path, "rb") as pptx_file:
+                                        ppt_bytes = pptx_file.read()
+                                    st.download_button(label="📊 Download PPT", data=ppt_bytes, file_name="ocr_presentation.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+                                else:
+                                    st.error("❌ PPT Generation Failed.")
 
 
 # ══════════════════════════════════════════════

@@ -37,6 +37,8 @@ def extract(file_path: str, image_output_dir: str = "data/extracted_images") -> 
         return _extract_pptx(file_path, image_output_dir)
     elif ext == ".txt":
         return _extract_txt(file_path)
+    elif ext in [".png", ".jpg", ".jpeg"]:
+        return _extract_img(file_path, image_output_dir)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
@@ -310,3 +312,30 @@ def _extract_txt(file_path: str) -> dict:
 
 def extract_text(file_path: str) -> str:
     return extract(file_path)["text"]
+
+def _extract_img(file_path: str, image_output_dir: str) -> dict:
+    import shutil
+    import os
+    from modules.ocr_module import extract_text_from_image
+
+    filename = os.path.basename(file_path)
+    img_dest_path = os.path.join(image_output_dir, filename)
+    if os.path.abspath(file_path) != os.path.abspath(img_dest_path):
+        shutil.copy2(file_path, img_dest_path)
+
+    image_metadata = {
+        "page": 1,
+        "source": "image",
+        "path": img_dest_path,
+        "name": filename
+    }
+
+    # Use the optimized OCR module extraction
+    cleaned_ocr = extract_text_from_image(img_dest_path)
+
+    final_text = f"![IMAGE:{img_dest_path}]\n\n{cleaned_ocr}"
+
+    return {
+        "text": final_text,
+        "images": [image_metadata],
+    }

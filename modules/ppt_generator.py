@@ -52,12 +52,12 @@ def _add_textbox(slide, text, left, top, width, height,
 # MARKDOWN PARSER
 # ─────────────────────────────────────────────
 
-def _parse_markdown_slides(structured_text: str) -> list[dict]:
+def _parse_markdown_slides(structured_text: str, fallback_title: str) -> list[dict]:
     """
     Parse markdown into a list of slide sections.
     """
     slides = []
-    current_heading = "Course Overview"
+    current_heading = fallback_title
     current_blocks = []
 
     lines = structured_text.strip().split("\n")
@@ -68,7 +68,7 @@ def _parse_markdown_slides(structured_text: str) -> list[dict]:
             continue
 
         if raw.startswith("# "):
-            if current_blocks or (current_heading and current_heading != "Course Overview"):
+            if current_blocks or (current_heading and current_heading != fallback_title):
                 slides.append({"heading": current_heading, "content_blocks": current_blocks})
             current_heading = raw[2:].strip()
             current_blocks = []
@@ -186,11 +186,10 @@ def _add_content_slide(prs, heading, bullets):
     tf = txBox.text_frame
     tf.word_wrap = True
 
-    # DYNAMIC SCALING
-    if bullet_count > 12: fs, sp = 12, 2
-    elif bullet_count > 8: fs, sp = 14, 4
-    elif bullet_count > 5: fs, sp = 16, 6
-    else: fs, sp = 20, 10
+    # DYNAMIC SCALING FOR READABILITY (Max 5 bullets)
+    if bullet_count > 4: fs, sp = 24, 12
+    elif bullet_count > 2: fs, sp = 26, 16
+    else: fs, sp = 30, 20
 
     for i, b in enumerate(bullets):
         if i == 0:
@@ -212,27 +211,35 @@ def _add_content_slide(prs, heading, bullets):
 
 def _distribute_content(prs, heading, blocks):
     """Iterate blocks and assign to specialized slides."""
-    MAX_BULLETS = 15 # Even higher for detail slides
+    MAX_BULLETS = 5
     bullets_buffer = []
+    slide_index = 0
 
     for block in blocks:
         if block['type'] == 'image':
             # Flush existing text first
             while bullets_buffer:
                 chunk = bullets_buffer[:MAX_BULLETS]
-                _add_content_slide(prs, heading, chunk)
+                current_heading = heading if slide_index == 0 else f"{heading} (Cont.)"
+                _add_content_slide(prs, current_heading, chunk)
                 bullets_buffer = bullets_buffer[MAX_BULLETS:]
+                slide_index += 1
             
             # Dedicated Visual Slide
-            _add_visual_slide(prs, heading, block['path'])
+            current_heading = heading if slide_index == 0 else f"{heading} (Cont.)"
+            _add_visual_slide(prs, current_heading, block['path'])
+            slide_index += 1
         else:
             bullets_buffer.append(block['text'])
             if len(bullets_buffer) >= MAX_BULLETS:
-                _add_content_slide(prs, heading, bullets_buffer)
+                current_heading = heading if slide_index == 0 else f"{heading} (Cont.)"
+                _add_content_slide(prs, current_heading, bullets_buffer)
                 bullets_buffer = []
+                slide_index += 1
 
     if bullets_buffer:
-        _add_content_slide(prs, heading, bullets_buffer)
+        current_heading = heading if slide_index == 0 else f"{heading} (Cont.)"
+        _add_content_slide(prs, current_heading, bullets_buffer)
 
 
 # ─────────────────────────────────────────────
@@ -253,7 +260,7 @@ def generate_ppt(
 
         _build_title_slide(prs, title)
 
-        slides_data = _parse_markdown_slides(structured_text)
+        slides_data = _parse_markdown_slides(structured_text, title)
         for s in slides_data:
             _distribute_content(prs, s["heading"], s["content_blocks"])
 
