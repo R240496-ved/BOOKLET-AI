@@ -8,7 +8,7 @@ IMAGE-FREE as per user request.
 import os
 import re
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, PageBreak, HRFlowable
+    SimpleDocTemplate, Paragraph, Spacer, PageBreak, HRFlowable, Image as RLImage
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -114,13 +114,13 @@ def _convert_bold(text: str) -> str:
 
 def generate_booklet(
     text: str,
-    images: list[dict] = None, # Left for backward combat, but IGNORING as per request
+    images: list[dict] = None, 
     title: str = "Study Booklet",
     output_path: str = "data/output/booklet.pdf"
 ) -> bool:
     """
     Generate a styled PDF booklet.
-    Images are EXCLUDED as per final user update.
+    Images are embedded inline when markers are found.
     """
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -148,10 +148,31 @@ def generate_booklet(
 
         for line in lines:
             raw = line.strip()
-            if not raw or raw.startswith("![IMAGE:"):
-                # Skip markers and empty lines
-                if not raw:
-                    elements.append(Spacer(1, 0.08 * inch))
+            if not raw:
+                elements.append(Spacer(1, 0.08 * inch))
+                continue
+                
+            if raw.startswith("![IMAGE:"):
+                img_path = raw[8:-1].strip()
+                if os.path.exists(img_path):
+                    try:
+                        img = RLImage(img_path)
+                        # Scale down massive images to fit A4 width (~6 inches inner)
+                        max_w = 5.5 * inch
+                        max_h = 7.0 * inch
+                        # Calculate ratio
+                        r1 = max_w / img.drawWidth
+                        r2 = max_h / img.drawHeight
+                        ratio = min(r1, r2, 1.0) # Never scale UP, only DOWN
+                        
+                        img.drawWidth = img.drawWidth * ratio
+                        img.drawHeight = img.drawHeight * ratio
+                        
+                        elements.append(Spacer(1, 0.1 * inch))
+                        elements.append(img)
+                        elements.append(Spacer(1, 0.2 * inch))
+                    except Exception as e:
+                        print(f"Skipping badly formatted image {img_path}: {e}")
                 continue
 
             converted = _convert_bold(raw)

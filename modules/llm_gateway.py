@@ -37,7 +37,7 @@ def build_rag_prompt(user_query: str, context_chunks: list[str], mode: str = "St
     if mode == "Exam":
         style = (
             "Generate concise exam-ready bullet points. "
-            "Highlight key terms in **bold**. Keep it short."
+            "CRUCIAL INSTRUCTION: You MUST aggressively highlight all important keywords, terms, and concepts in **bold** text."
         )
     else:
         style = (
@@ -64,7 +64,7 @@ def build_general_prompt(user_query: str, mode: str = "Study") -> tuple[str, str
     Build a general study notes prompt (no document context).
     """
     if mode == "Exam":
-        style = "Concise exam notes with **bold** keywords and bullet points."
+        style = "Concise exam notes. CRUCIAL INSTRUCTION: You MUST aggressively highlight all important keywords, terms, and concepts in **bold** text."
     else:
         style = "Detailed study notes with headings, bullets, and examples."
 
@@ -128,19 +128,23 @@ def _call_ollama(system_msg: str, user_msg: str) -> str:
 # FALLBACK (Rule-based)
 # ─────────────────────────────────────────────
 
-def _rule_based_fallback(user_msg: str, context_chunks: list[str]) -> str:
+def _rule_based_fallback(user_msg: str, context_chunks: list[str], error_details: str = None) -> str:
     """
     When both API and local LLM are unavailable.
     Returns the top retrieved context as formatted notes.
     """
+    error_prefix = f"**⚠️ LLM Service Error:** `{error_details}`\n\n" if error_details else ""
+    
     if context_chunks:
         content = "\n\n".join(context_chunks[:3])
         return (
             f"## Notes (Offline Fallback)\n\n"
+            f"{error_prefix}"
             f"*LLM unavailable — showing most relevant document sections:*\n\n"
             f"{content}"
         )
     return (
+        f"{error_prefix}"
         "**LLM unavailable and no document context found.**\n\n"
         "Please upload a document first, or check your API key / Ollama connection."
     )
@@ -197,6 +201,8 @@ def generate_answer(
 
     except Exception as fallback_err:
         print(f"[LLM Gateway] Fallback mode also failed: {fallback_err}")
+        
+    last_error = fallback_err if 'fallback_err' in locals() else primary_err
 
     # Last resort: rule-based
-    return _rule_based_fallback(user_query, context_chunks)
+    return _rule_based_fallback(user_query, context_chunks, str(last_error))
