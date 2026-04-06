@@ -211,7 +211,7 @@ def _add_content_slide(prs, heading, bullets):
 
 def _distribute_content(prs, heading, blocks):
     """Iterate blocks and assign to specialized slides."""
-    MAX_BULLETS = 5
+    MAX_BULLETS = 6
     bullets_buffer = []
     slide_index = 0
 
@@ -259,6 +259,11 @@ def generate_ppt(
         prs.slide_height = Inches(7.5)
 
         _build_title_slide(prs, title)
+
+        # Validation: Refuse to generate from unstructured raw OCR text
+        if "#" not in structured_text:
+            print("[PPT Generator] Error: Input text contains no headings. Raw OCR or unstructured text is not allowed.")
+            return False
 
         slides_data = _parse_markdown_slides(structured_text, title)
         for s in slides_data:

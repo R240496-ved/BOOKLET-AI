@@ -30,14 +30,14 @@ def _preprocess_image(image_path: str) -> str:
 
     # 2. Resize intelligently to balance speed and accuracy
     w, h = img.size
-    max_w = 1200
-    min_w = 800
+    max_w = 800
+    min_w = 600
 
     if w > max_w:
         scale = max_w / w
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     elif w < min_w:
-        scale = 1000 / w
+        scale = 800 / w
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
     # 3. Boost contrast

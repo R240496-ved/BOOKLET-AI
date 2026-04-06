@@ -153,6 +153,9 @@ def generate_mcq_quiz(context: str, num_questions: int = 5) -> list:
         system_prompt = (
             f"You are an expert quiz generator. Your task is to generate {num_questions} multiple-choice questions "
             "based exclusively on the provided context.\n"
+            "CRITICAL RULES:\n"
+            "1. NO REPETITION: Every question must test a unique concept or fact.\n"
+            "2. Ensure proper topic coverage across the entire text.\n"
             "Format your output strictly as a JSON array of objects. Each object must have the following keys:\n"
             "- 'question': a string containing the question text.\n"
             "- 'options': an array of exactly 4 strings representing the possible choices.\n"
