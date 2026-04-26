@@ -62,7 +62,8 @@ def generate_academic_content(input_text: str, is_syllabus: bool = False, contex
             user_msg = f"Topic: {input_text}"
 
         if context:
-            user_msg += f"\n\nContext to help (Reference this if useful):\n{context[:15000]}"
+            # Sliced to 7000 chars to stay within Groq TPM limits
+            user_msg += f"\n\nContext to help (Reference this if useful):\n{context[:7000]}"
 
         response = client.chat.completions.create(
             model=model_name,
@@ -101,19 +102,25 @@ def generate_step_by_step_solution(question: str, context: str = "") -> str:
 
     try:
         system_prompt = (
-            "You are an expert academic solver and tutor. "
-            "The user will provide a question, problem statement, or image-extracted question text.\n"
-            "Your task is to provide a clear, logical, step-by-step solution to the problem.\n"
-            "End with a final, clearly highlighted answer.\n"
-            "Structure:\n"
-            "## Problem Analysis\n"
-            "## Step-by-Step Solution\n"
-            "## Final Answer"
+            "You are a Senior Math Tutor and Algebraic Expert.\n"
+            "The user will provide an equation extracted from a handwritten notebook (it may contain [ABOVE BAR] or [BELOW BAR] labels for fractions).\n\n"
+            "YOUR TASK:\n"
+            "1. RECONSTRUCT the clean equation first.\n"
+            "2. SOLVE it step-by-step with clear logic.\n\n"
+            "STRICT OUTPUT FORMAT:\n"
+            "**Extracted Question:** <The clear algebraic equation>\n\n"
+            "**Solution:**\n"
+            "<Step-by-step breakdown (e.g., Factorization, Simplification, Solving for variable)>\n\n"
+            "**Final Answer:**\n"
+            "<The final simplified result, bolded>\n\n"
+            "RULES:\n"
+            "- Never ignore domain restrictions (e.g., y != 1).\n"
+            "- Be precise and student-friendly."
         )
 
-        user_msg = f"Question:\n{question}"
+        user_msg = f"Question/Segments:\n{question}"
         if context:
-            user_msg += f"\n\nReference Material/Context:\n{context[:15000]}"
+            user_msg += f"\n\nContext:\n{context[:7000]}"
 
         response = client.chat.completions.create(
             model=model_name,
@@ -121,7 +128,7 @@ def generate_step_by_step_solution(question: str, context: str = "") -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
             ],
-            temperature=0.3
+            temperature=0.0
         )
 
         return response.choices[0].message.content.strip()
@@ -163,7 +170,8 @@ def generate_mcq_quiz(context: str, num_questions: int = 5) -> list:
             "Do not output markdown formatting blocks like ```json, just the raw JSON array."
         )
 
-        user_msg = f"Context:\n{context[:15000]}"
+        # Sliced to 7000 chars to stay within Groq TPM limits
+        user_msg = f"Context:\n{context[:7000]}"
 
         response = client.chat.completions.create(
             model=model_name,

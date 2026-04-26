@@ -132,7 +132,18 @@ defaults = {
     "current_page": "📤 Upload & Process", # For tab redirects
     "ocr_image_path": "",      # Path to the uploaded image/pdf
     "ocr_is_pdf": False,       # Boolean for OCR file format parsing
-    "ocr_page_paths": [],      # List of paths for PDF multipage split visualizations
+    "upload_rag_store": None,  # Separate store for main upload
+    "ocr_rag_store": None,     # Separate store for OCR
+    "active_context_source": "Upload", # "Upload" or "OCR"
+    "is_processing": False,    # To track if a long task is running
+    
+    # Widget keys (to persist inputs across tab switches)
+    "uploader_key": 0,
+    "input_method": "File Upload",
+    "pasted_text_input": "",
+    "doc_title_input": "Study Booklet",
+    "ocr_uploader_key": 0,
+    "ocr_page_paths": [],
 }
 
 for k, v in defaults.items():
@@ -182,18 +193,44 @@ with st.sidebar:
     st.markdown("---")
 
     # Pipeline status
-    st.markdown("### Pipeline Status")
+    st.markdown("### 📊 Project Status")
+    if st.session_state.is_processing:
+        st.markdown('<div class="step">⏳ Processing... Please stay on this page</div>', unsafe_allow_html=True)
+    
+    # Active Source Indicator
+    source = st.session_state.active_context_source
+    st.markdown(f"**Active Source:** `{source}`")
+    
     if st.session_state.pipeline_done:
         fname = st.session_state.uploaded_filename
-        n_img = len(st.session_state.images)
-        n_chunks = len(st.session_state.rag_store["chunks"]) if st.session_state.rag_store else 0
+        
+        # Determine which store to describe in sidebar
+        active_store = st.session_state.upload_rag_store if source == "Upload" else st.session_state.ocr_rag_store
+        n_chunks = len(active_store["chunks"]) if active_store else 0
+        
         st.markdown(f"""
-        <div class="step done">✅ File: {fname}</div><br>
-        <div class="step done">✅ {n_chunks} chunks indexed</div><br>
-        <div class="step done">✅ {n_img} image(s) extracted</div>
+        <div class="step done">✅ Source: {fname}</div><br>
+        <div class="step done">✅ {n_chunks} chunks indexed</div>
         """, unsafe_allow_html=True)
+        
+        if st.button("🗑️ Clear All Contexts", use_container_width=True):
+            keys_to_clear = [
+                "pipeline_done", "raw_text", "clean_text", "structured_text", "images", 
+                "upload_rag_store", "ocr_rag_store", "uploaded_filename", "upload_context", 
+                "ocr_text", "rag_context", "current_context", "mcq_quiz", "user_answers", 
+                "quiz_submitted", "gen_output", "latest_query", "latest_response"
+            ]
+            for k in keys_to_clear:
+                if k in st.session_state:
+                    st.session_state[k] = defaults.get(k, "") if "rag_store" not in k else None
+            
+            st.session_state.uploader_key += 1
+            st.session_state.ocr_uploader_key += 1
+            st.session_state.pipeline_done = False
+            st.session_state.active_context_source = "Upload"
+            st.rerun()
     else:
-        st.markdown('<div class="step">⬆️ No file processed yet</div>', unsafe_allow_html=True)
+        st.markdown('<div class="step">⬆️ No active context</div>', unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -290,21 +327,29 @@ if page == "📤 Upload & Process":
             "Upload your document",
             type=["pdf", "pptx", "txt", "png", "jpg", "jpeg"],
             help="Supports PDF, PPTX, TXT, and Images (handwritten notes via OCR).",
+            key=f"file_uploader_{st.session_state.uploader_key}"
         )
 
         input_method = st.radio(
             "Or paste text directly:",
             ["File Upload", "Paste Text"],
             horizontal=True,
+            key="input_method"
         )
 
         pasted_text = ""
-        if input_method == "Paste Text":
-            pasted_text = st.text_area("Paste your content here:", height=200)
+        if st.session_state.input_method == "Paste Text":
+            pasted_text = st.text_area("Paste your content here:", height=200, key="pasted_text_input")
+        else:
+            pasted_text = st.session_state.pasted_text_input
 
-        doc_title = st.text_input("Document title (used in Booklet & PPT):", value="Study Booklet")
+        doc_title = st.text_input("Document title (used in Booklet & PPT):", key="doc_title_input")
 
         process_btn = st.button("🚀 Process Document", type="primary", use_container_width=True)
+        
+        if st.session_state.pipeline_done and not process_btn:
+            st.info(f"💡 Currently loaded: **{st.session_state.uploaded_filename}**. You can upload a new file to replace it.")
+
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col2:
@@ -325,64 +370,76 @@ if page == "📤 Upload & Process":
 
     # ── PROCESS ──
     if process_btn:
-        raw_text = None
-        images = []
-        file_name = "pasted_text"
+        if (st.session_state.input_method == "File Upload" and not uploaded_file) or \
+           (st.session_state.input_method == "Paste Text" and not pasted_text.strip()):
+            st.error("Please provide a file or paste text before processing.")
+        else:
+            st.session_state.is_processing = True
+            try:
+                raw_text = None
+                images = []
+                file_name = "pasted_text"
 
-        if input_method == "File Upload" and uploaded_file:
-            os.makedirs("data/input", exist_ok=True)
-            os.makedirs("data/extracted_images", exist_ok=True)
+                if st.session_state.input_method == "File Upload" and uploaded_file:
+                    os.makedirs("data/input", exist_ok=True)
+                    os.makedirs("data/extracted_images", exist_ok=True)
 
-            file_path = os.path.join("data", "input", uploaded_file.name)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+                    file_path = os.path.join("data", "input", uploaded_file.name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
 
-            file_name = uploaded_file.name
+                    file_name = uploaded_file.name
 
-            with st.spinner("📂 Extracting text and images..."):
-                result = M["extract"](file_path, image_output_dir="data/extracted_images")
-                raw_text = result["text"]
-                images = result["images"]
+                    with st.spinner("📂 Extracting text and images..."):
+                        result = M["extract"](file_path, image_output_dir="data/extracted_images")
+                        raw_text = result["text"]
+                        images = result["images"]
 
-        elif input_method == "Paste Text" and pasted_text.strip():
-            raw_text = pasted_text.strip()
-            images = []
+                elif st.session_state.input_method == "Paste Text" and pasted_text.strip():
+                    raw_text = pasted_text.strip()
+                    images = []
 
-        if not raw_text or len(raw_text.strip()) < 5:
-            st.error("❌ No readable text found. Please upload a clearer document or image.")
-            st.stop()
+                if raw_text and len(raw_text.strip()) >= 5:
+                    with st.spinner("🧹 Cleaning text..."):
+                        clean = M["clean"](raw_text)
+                        if not clean:
+                            st.error("❌ Text cleaning resulted in empty data.")
+                            st.stop()
 
-        with st.spinner("🧹 Cleaning text..."):
-            clean = M["clean"](raw_text)
-            if not clean:
-                st.error("❌ Text cleaning resulted in empty data. Parsing stopped.")
-                st.stop()
+                    with st.spinner("📐 Structuring content..."):
+                        structured = M["structure"](clean)
+                        if not structured:
+                            st.error("❌ Structuring failed.")
+                            st.stop()
 
-        with st.spinner("📐 Structuring content..."):
-            structured = M["structure"](clean)
-            if not structured:
-                st.error("❌ Structuring failed. Parsing stopped.")
-                st.stop()
+                    with st.spinner("🧠 Building RAG index (embedding chunks)..."):
+                        rag_store = M["build_rag"](clean)
+                        if not rag_store or not rag_store.get("chunks"):
+                            st.error("❌ RAG Indexing failed.")
+                            st.stop()
 
-        with st.spinner("🧠 Building RAG index (embedding chunks)..."):
-            rag_store = M["build_rag"](clean)
-            if not rag_store or not rag_store.get("chunks"):
-                st.error("❌ RAG Indexing failed. Document might be too small to extract data.")
-                st.stop()
-
-        # Persist to session state
-        st.session_state.pipeline_done = True
-        st.session_state.upload_context = clean  # Strict isolation hook
-        st.session_state.current_context = clean # Assign base current context to Upload context
-        st.session_state.rag_context = clean     # Sync initial state to Chat
-        
-        st.session_state.raw_text = raw_text
-        st.session_state.clean_text = clean
-        st.session_state.structured_text = structured
-        st.session_state.images = images
-        st.session_state.rag_store = rag_store
-        st.session_state.uploaded_filename = file_name
-        st.session_state.doc_title = doc_title
+                    # Persist to session state
+                    st.session_state.pipeline_done = True
+                    st.session_state.upload_context = clean
+                    st.session_state.current_context = clean
+                    st.session_state.rag_context = clean
+                    st.session_state.active_context_source = "Upload"
+                    
+                    st.session_state.raw_text = raw_text
+                    st.session_state.clean_text = clean
+                    st.session_state.structured_text = structured
+                    st.session_state.images = images
+                    st.session_state.upload_rag_store = rag_store
+                    st.session_state.uploaded_filename = file_name
+                    st.session_state.doc_title = doc_title
+                else:
+                    st.error("❌ No readable text found.")
+            
+            except Exception as e:
+                st.error(f"❌ Processing Error: {str(e)}")
+            finally:
+                st.session_state.is_processing = False
+                st.rerun()
 
     if st.session_state.pipeline_done and st.session_state.structured_text:
         st.success(f"✅ Processed Data available: **{st.session_state.uploaded_filename}** — Ready for Chat, Booklet, or GEN")
@@ -503,13 +560,17 @@ elif page == "💬 Chat & Solve":
             route = M["route"](prompt, from_image=False)
             
             with st.spinner(f"Intelligent Routing: **{route}** Mode - processing..."):
+                # Dynamically choose context based on source
+                active_context = st.session_state.ocr_text if st.session_state.active_context_source == "OCR" else st.session_state.rag_context
+                active_store = st.session_state.ocr_rag_store if st.session_state.active_context_source == "OCR" else st.session_state.upload_rag_store
+
                 if route == "GEN":
-                    answer = M["gen_academic"](prompt, is_syllabus=False, context=st.session_state.rag_context)
+                    answer = M["gen_academic"](prompt, is_syllabus=False, context=active_context)
                 elif route == "SOLVE":
-                    answer = M["gen_solve"](prompt, context=st.session_state.rag_context)
+                    answer = M["gen_solve"](prompt, context=active_context)
                 else:
                     # RAG Mode
-                    rag = st.session_state.rag_store
+                    rag = active_store
                     relevant_chunks = []
                     if rag and rag.get("index") is not None:
                         relevant_chunks = M["retrieve"](prompt, rag["chunks"], rag["index"], k=5)
@@ -660,7 +721,7 @@ elif page == "📸 OCR Upload":
     st.markdown("## 📸 OCR Image & PDF Upload")
     st.caption("Upload images or scanned PDFs (handwritten/notes). Extract text and send it to RAG, GEN, SOLVE, or Explain it.")
     
-    uploaded_file_ocr = st.file_uploader("Upload Image or PDF", type=["png", "jpg", "jpeg", "pdf"])
+    uploaded_file_ocr = st.file_uploader("Upload Image or PDF", type=["png", "jpg", "jpeg", "pdf"], key=f"ocr_uploader_{st.session_state.ocr_uploader_key}")
     
     if uploaded_file_ocr:
         os.makedirs("data/input", exist_ok=True)
@@ -708,6 +769,14 @@ elif page == "📸 OCR Upload":
                 st.session_state.ocr_page_paths = page_paths
                 st.session_state.ocr_text = "\n\n".join(extracted_text_all)
                 st.session_state.ocr_editable_text = st.session_state.ocr_text
+                
+                # AUTO-SAVE TO OCR STORE (Isolated)
+                with st.spinner("Processing OCR Context..."):
+                    clean_text = M["clean"](st.session_state.ocr_text)
+                    st.session_state.ocr_rag_store = M["build_rag"](clean_text)
+                    # We don't set pipeline_done=True yet because this is isolated OCR
+                    # unless they click one of the transition buttons
+                
                 doc.close()
             elif st.session_state.ocr_page_paths:
                 st.info("Previous Extraction Previews:")
@@ -720,65 +789,71 @@ elif page == "📸 OCR Upload":
                     extracted_text = M["ocr_ext"](file_path)
                     st.session_state.ocr_text = extracted_text
                     st.session_state.ocr_editable_text = extracted_text
+                    
+                    # AUTO-SAVE TO OCR STORE (Isolated)
+                    clean_text = M["clean"](extracted_text)
+                    st.session_state.ocr_rag_store = M["build_rag"](clean_text)
+                    st.rerun()
 
     if st.session_state.ocr_text:
-            st.warning("⚠️ **Note:** OCR on handwritten text may contain spelling errors. Please correct them below before passing to AI.")
+            st.info("💡 **Auto-Save Active:** Changes to the text below are automatically used for Solve/Chat.")
             
             # Use key binding so data persists across tabs
             if not st.session_state.ocr_editable_text:
                 st.session_state.ocr_editable_text = st.session_state.ocr_text
             
-            st.text_area("Extracted Text (Editable):", height=250, key="ocr_editable_text")
-            edited_text = st.session_state.ocr_editable_text
+            edited_text = st.text_area("Extracted Text (Editable):", height=250, key="ocr_editable_text")
             
-            if st.button("💾 Save as Context (Enables Chat & MCQ Quiz)", type="primary"):
-                with st.spinner("Cleaning & Saving OCR Context..."):
-                    clean_text = M["clean"](edited_text)
-                    st.session_state.ocr_text = clean_text
-                    st.session_state.current_context = clean_text
-                    st.session_state.rag_context = clean_text
-                    rag_store = M["build_rag"](clean_text)
-                    st.session_state.rag_store = rag_store
-                    st.session_state.pipeline_done = True
-                    st.success("✅ Context Saved! You can now use the Chat & Solve, MCQ Quiz tabs, or GEN Mode.")
+            # If the user edited the text, we should ideally update the rag_store.
+            # We'll do this lazily when they click a button or we can do it here if it's small.
+            # For now, we'll sync it when they click "Solve" or "Ask".
             
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             
             # Variables to store output so it renders outside the columns
             ocr_output_header = None
             ocr_output_content = None
-            show_downloads = False
             
             with col1:
                 if st.button("💬 Ask (RAG)", use_container_width=True):
-                    # Set up context and dynamically transition to chat
-                    clean_text = M["clean"](edited_text)
-                    st.session_state.rag_context = clean_text
-                    st.session_state.current_context = clean_text
-                    st.session_state.rag_store = M["build_rag"](clean_text)
-                    
+                    # SWITCH ACTIVE CONTEXT TO OCR
+                    st.session_state.active_context_source = "OCR"
+                    st.session_state.uploaded_filename = f"OCR: {uploaded_file_ocr.name}"
                     st.session_state.pipeline_done = True
+                    
                     st.session_state.current_page = "💬 Chat & Solve"
                     st.rerun()
 
             with col2:
                 if st.button("✨ Ask GEN", use_container_width=True):
-                    # Preset GEN variables and transition
+                    # SWITCH ACTIVE CONTEXT TO OCR
+                    st.session_state.active_context_source = "OCR"
+                    st.session_state.uploaded_filename = f"OCR: {uploaded_file_ocr.name}"
+                    st.session_state.pipeline_done = True
+                    
                     st.session_state.gen_input = edited_text
                     st.session_state.current_page = "✨ Generate (GEN)"
                     st.rerun()
                         
             with col3:
-                if st.button("💡 Explain Concept", use_container_width=True):
-                    with st.spinner("Analyzing Concept..."):
-                        # Keep straight explanation inside OCR visually
-                        prompt = f"Please interpret and clearly explain the concepts mentioned in this OCR-extracted text. Format using concise paragraphs and bullet points where helpful:\n\n{edited_text}"
+                if st.button("💡 Explain", use_container_width=True):
+                    with st.spinner("Analyzing..."):
+                        prompt = f"Please interpret and clearly explain the concepts or handwriting mentioned here. Format using concise paragraphs:\n\n{edited_text}"
                         ans = M["llm"](user_query=prompt, context_chunks=[])
                         ocr_output_header = "### 💡 Explanation"
+                        ocr_output_content = ans
+
+            with col4:
+                if st.button("🧮 Solve", use_container_width=True):
+                    with st.spinner("Solving math/logic problem..."):
+                        # Ensure GEN solver knows we are in OCR context for this run
+                        ans = M["gen_solve"](edited_text)
+                        ocr_output_header = "### 🧮 Step-by-Step Solution"
                         ocr_output_content = ans
                         
             if ocr_output_content:
                 st.markdown("---")
-                st.markdown(ocr_output_header)
+                if ocr_output_header:
+                    st.markdown(ocr_output_header)
                 st.markdown(ocr_output_content)
 

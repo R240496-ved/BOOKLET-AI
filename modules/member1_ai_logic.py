@@ -135,7 +135,7 @@ def call_openai_api(prompt: str, context: str = "") -> str:
     )
 
     if context:
-        context = context[:20000]
+        context = context[:7000]
         system_message += f"\n\nUse this document as reference:\n{context}"
 
     try:

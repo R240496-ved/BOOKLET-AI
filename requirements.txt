@@ -1,6 +1,5 @@
 streamlit
 PyMuPDF
-pymupdf
 python-pptx
 reportlab
 openai
@@ -11,3 +10,7 @@ numpy
 Pillow
 requests
 easyocr
+opencv-python
+sympy
+torch
+torchvision
