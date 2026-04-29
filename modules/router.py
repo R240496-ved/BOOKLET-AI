@@ -15,18 +15,18 @@ def route_query(query: str, from_image: bool = False) -> str:
     query_lower = query.lower()
 
     # 1. Check for Generation keywords
-    gen_keywords = ["notes", "generate", "lecture", "booklet", "ppt", "pdf", "syllabus"]
+    gen_keywords = ["generate notes", "create notes", "make notes", "summarize", "summary", "create a ppt", "generate a ppt", "make a ppt", "create a pdf", "generate a pdf", "make a pdf", "create booklet", "generate booklet"]
     for kw in gen_keywords:
         if kw in query_lower:
             return "GEN"
 
     # 2. Check for Solving step-by-step
     # If it comes from an image and has a question mark or solving keywords
-    solve_keywords = ["solve", "calculate", "find the value", "prove that", "evaluate"]
+    solve_keywords = ["+", "=", "-", "*", "/", "equation", "calculate", "evaluate", "prove that"]
     is_question = "?" in query
 
     if from_image:
-        if is_question or any(kw in query_lower for kw in solve_keywords):
+        if any(kw in query_lower for kw in solve_keywords):
             return "SOLVE"
             
     if any(kw in query_lower for kw in solve_keywords):

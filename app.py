@@ -487,18 +487,21 @@ elif page == "📘 Booklet Generator":
                     output_path="data/output/booklet.pdf",
                 )
 
-            if success and os.path.exists("data/output/booklet.pdf"):
-                st.success("PDF generated!")
-                with open("data/output/booklet.pdf", "rb") as f:
-                    st.download_button(
-                        "📥 Download PDF Booklet",
-                        data=f,
-                        file_name=f"{st.session_state.doc_title}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-            else:
-                st.error("PDF generation failed. Check console logs.")
+                if success and os.path.exists("data/output/booklet.pdf"):
+                    st.success("PDF generated!")
+                    with open("data/output/booklet.pdf", "rb") as f:
+                        st.session_state.booklet_pdf_bytes = f.read()
+                else:
+                    st.error("PDF generation failed. Check console logs.")
+
+        if st.session_state.get("booklet_pdf_bytes"):
+            st.download_button(
+                "📥 Download PDF Booklet",
+                data=st.session_state.booklet_pdf_bytes,
+                file_name=f"{st.session_state.doc_title}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
     with col2:
         st.markdown("### 📊 Presentation (PPT)")
         st.caption("Auto-generates slides dynamically from your structured text.")
@@ -513,18 +516,21 @@ elif page == "📘 Booklet Generator":
                     output_path="data/output/booklet.pptx",
                 )
 
-            if success and os.path.exists("data/output/booklet.pptx"):
-                st.success("✅ PPT generated!")
-                with open("data/output/booklet.pptx", "rb") as f:
-                    st.download_button(
-                        "📥 Download PowerPoint",
-                        data=f,
-                        file_name=f"{st.session_state.doc_title}.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True,
-                    )
-            else:
-                st.error("PPT generation failed. Check console logs.")
+                if success and os.path.exists("data/output/booklet.pptx"):
+                    st.success("✅ PPT generated!")
+                    with open("data/output/booklet.pptx", "rb") as f:
+                        st.session_state.booklet_ppt_bytes = f.read()
+                else:
+                    st.error("PPT generation failed. Check console logs.")
+
+        if st.session_state.get("booklet_ppt_bytes"):
+            st.download_button(
+                "📥 Download PowerPoint",
+                data=st.session_state.booklet_ppt_bytes,
+                file_name=f"{st.session_state.doc_title}.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True,
+            )
 # ══════════════════════════════════════════════
 # PAGE: RAG CHATBOT
 # ══════════════════════════════════════════════
@@ -689,29 +695,32 @@ elif page == "✨ Generate (GEN)":
         c1, c2 = st.columns(2)
         
         with c1:
-            if st.button("Export to PDF", use_container_width=True):
+            if st.button("Generate PDF", use_container_width=True):
                 with st.spinner("Generating Booklet PDF..."):
                     pdf_path = "data/output/generated_notes.pdf"
-                    success = M["gen_booklet"](st.session_state.gen_notes, [], "Generated Study Notes", pdf_path)
+                    success = M["gen_booklet"](st.session_state.gen_output, [], "Generated Study Notes", pdf_path)
                     if success and os.path.exists(pdf_path):
                         with open(pdf_path, "rb") as pdf_file:
-                            pdf_bytes = pdf_file.read()
-                        st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name="study_notes.pdf", mime="application/pdf", use_container_width=True)
+                            st.session_state.quick_pdf_bytes = pdf_file.read()
                     else:
                         st.error("❌ PDF Generation Failed.")
+            
+            if st.session_state.get("quick_pdf_bytes"):
+                st.download_button(label="📄 Download PDF", data=st.session_state.quick_pdf_bytes, file_name="study_notes.pdf", mime="application/pdf", use_container_width=True)
                         
         with c2:
-            if st.button("Export to PPT", use_container_width=True):
+            if st.button("Generate PPT", use_container_width=True):
                 with st.spinner("Generating Presentation..."):
                     ppt_path = "data/output/generated_slides.pptx"
-                    # Pass the successfully structured text, NOT raw OCR
-                    success = M["gen_ppt"](st.session_state.gen_notes, [], "Generated Topic", ppt_path)
+                    success = M["gen_ppt"](st.session_state.gen_output, [], "Generated Topic", ppt_path)
                     if success and os.path.exists(ppt_path):
                         with open(ppt_path, "rb") as pptx_file:
-                            ppt_bytes = pptx_file.read()
-                        st.download_button(label="📊 Download PPT", data=ppt_bytes, file_name="study_presentation.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
+                            st.session_state.quick_ppt_bytes = pptx_file.read()
                     else:
                         st.error("❌ PPT Generation Failed.")
+            
+            if st.session_state.get("quick_ppt_bytes"):
+                st.download_button(label="📊 Download PPT", data=st.session_state.quick_ppt_bytes, file_name="study_presentation.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", use_container_width=True)
 
 # ══════════════════════════════════════════════
 # PAGE: OCR UPLOAD
@@ -818,7 +827,7 @@ elif page == "📸 OCR Upload":
                 if st.button("💬 Ask (RAG)", use_container_width=True):
                     # SWITCH ACTIVE CONTEXT TO OCR
                     st.session_state.active_context_source = "OCR"
-                    st.session_state.uploaded_filename = f"OCR: {uploaded_file_ocr.name}"
+                    st.session_state.uploaded_filename = f"OCR: {os.path.basename(st.session_state.ocr_image_path)}"
                     st.session_state.pipeline_done = True
                     
                     st.session_state.current_page = "💬 Chat & Solve"
@@ -828,7 +837,7 @@ elif page == "📸 OCR Upload":
                 if st.button("✨ Ask GEN", use_container_width=True):
                     # SWITCH ACTIVE CONTEXT TO OCR
                     st.session_state.active_context_source = "OCR"
-                    st.session_state.uploaded_filename = f"OCR: {uploaded_file_ocr.name}"
+                    st.session_state.uploaded_filename = f"OCR: {os.path.basename(st.session_state.ocr_image_path)}"
                     st.session_state.pipeline_done = True
                     
                     st.session_state.gen_input = edited_text
